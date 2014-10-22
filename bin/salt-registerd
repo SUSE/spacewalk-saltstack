@@ -1,0 +1,97 @@
+#!/usr/bin/env python
+# Copyright (c) 2014 SUSE
+#
+# Licensed under the MIT license. See MIT-LICENSE for details.
+#
+#from spacewalk.common.rhnException import rhnFault
+import logging
+import sys
+
+import salt.utils.event
+import salt.client
+
+from spacewalk.common import rhnFlags
+from spacewalk.server import rhnUser, rhnServer, rhnSQL
+from spacewalk.common.rhnConfig import CFG, initCFG
+from rhn import rpclib
+
+initCFG()
+rhnSQL.initDB()
+logging.getLogger().addHandler(logging.StreamHandler())
+
+def register_system(data):
+    local = salt.client.LocalClient()
+    minion = data['data']['id']
+
+    # ask for the minion data to get its id that tell us
+    # if it is registered, and data to register it
+    ret = local.cmd_iter(minion, 'grains.items')
+
+    for grains in ret:
+        print(grains)
+
+        if grains.has_key(minion):
+
+            values = grains[minion]['ret']
+
+            query = rhnSQL.prepare('SELECT id from rhnServer WHERE digital_server_id=:did')
+            result = query.execute(did=('SALT-ID-%s' % values['server_id']))
+
+            if result > 0:
+                logging.info('System %s is already registered' % minion)
+                # XXX Hackweek... it is not that easy... check if needs
+                # to be re-registered or updated
+                return
+
+            # cheat
+            user = rhnUser.search('admin')
+
+            rhnSQL.clear_log_id()
+            newserv = rhnServer.Server(user, values['osarch'])
+
+            # Idea. In the future, search for the reg key using
+            # pillars. Then if no key is found for a system
+            # use
+            # tokens_obj = rhnServer.search_org_token(user.contact["org_id"])
+            # rhnFlags.set("universal_registration_token", tokens_obj)
+            #
+            # XXX Hackweek hardcoded!
+            tokens_obj = rhnServer.search_token('1-SALT')
+
+            #log_user_id = tokens_obj.get_user_id()
+            rhnFlags.set("registration_token", tokens_obj)
+
+            # Use a generated spacewalk id for now
+            #newserv.server.data['id'] = (234234234, 0)
+            # reserve the id
+            newserv.getid()
+            # overrite the digital id
+            newserv.server['digital_server_id'] =  'SALT-ID-%s' % values['server_id']
+            newserv.server['release'] = values['osrelease']
+            newserv.server['os'] = values['osfullname']
+            newserv.server['name'] = minion
+            newserv.virt_uuid = None
+            newserv.save()
+
+            rhnSQL.commit()
+
+            logging.info("%s registered as %s" % (minion, newserv.getid()))
+        else:
+            logging.warning("Can't get grains for %s" % minion)
+
+
+event = salt.utils.event.MasterEvent('/var/run/salt/master')
+for ev in event.iter_events(full=True):
+
+    # other possible values:
+    # salt/key act accept, act reject
+    # salt/auth
+    if ev['tag'] == 'salt/auth':
+        minion = ev['data']['id']
+        print("minion %s authenticated" % minion)
+        if ev['data']['result'] == True:
+            print("checking reg status")
+            register_system(ev)
+        else:
+            print(ev)
+
