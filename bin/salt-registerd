@@ -34,15 +34,6 @@ def register_system(data):
 
             values = grains[minion]['ret']
 
-            query = rhnSQL.prepare('SELECT id from rhnServer WHERE digital_server_id=:did')
-            result = query.execute(did=('SALT-ID-%s' % minion))
-
-            if result > 0:
-                logging.info('System %s is already registered' % minion)
-                # XXX Hackweek... it is not that easy... check if needs
-                # to be re-registered or updated
-                return
-
             # cheat
             user = rhnUser.search('admin')
 
@@ -80,18 +71,82 @@ def register_system(data):
             logging.warning("Can't get grains for %s" % minion)
 
 
-event = salt.utils.event.MasterEvent('/var/run/salt/master')
-for ev in event.iter_events(full=True):
+class Saltwalk:
+    def __init__(self):
+        self.event_src = salt.utils.event.MasterEvent('/var/run/salt/master')
+        self.pending_jobs = set()
 
-    # other possible values:
-    # salt/key act accept, act reject
-    # salt/auth
-    if ev['tag'] == 'salt/auth':
-        minion = ev['data']['id']
-        print("minion %s authenticated" % minion)
-        if ev['data']['result'] == True:
-            print("checking reg status")
-            register_system(ev)
+        XMLRPC_URL = "http://localhost/XMLRPC"
+        self.rpc = rpclib.Server(XMLRPC_URL)
+
+
+    def run(self):
+        for ev in self.event_src.iter_events(full=True):
+            # other possible values:
+            # salt/key act accept, act reject
+            # salt/auth
+            if ev['tag'] == 'salt/auth':
+                minion = ev['data']['id']
+                logging.info("minion %s authenticated" % minion)
+                # XXX do we need to do something?
+            elif ev['tag'] == 'minion_start':
+                minion = ev['data']['id']
+                logging.info('minion %s started' % minion)
+                if not self._is_registered(minion):
+                    register_system(ev)
+                self._request_package_list(minion)
+            elif ev['tag'] == 'new_job':
+                # XXX create spacewalk action?
+                pass
+            else:
+                # only react to return values
+                if (ev['data'].has_key('jid') and
+                    ev['data'].has_key('cmd') and
+                    ev['data']['cmd'] == '_return'):
+                    jid = ev['data']['jid']
+                    if jid in self.pending_jobs:
+                        self._process_result(jid, ev)
+                else:
+                    logging.warning('Not handling event %s' % ev['tag'])
+
+    def _is_registered(self, minion):
+        query = rhnSQL.prepare('SELECT id from rhnServer WHERE digital_server_id=:did')
+        result = query.execute(did=('SALT-ID-%s' % minion))
+
+        if result > 0:
+            return query.fetchone_dict()['id']
+        return False
+
+    def _request_package_list(self, minion):
+        local = salt.client.LocalClient()
+        jobid = local.cmd_async(minion, 'pkg.list_pkgs')
+        if jobid != 0:
+            logging.info("requested package list for %s (jid %s)" % (minion, jobid))
+            self.pending_jobs.add(jobid)
+
+    def _process_result(self, jid, ev):
+        if ev.has_key('data') and ev['data'].has_key('id'):
+            minion = ev['data']['id']
+            if (ev['data']['fun'] == 'pkg.list_pkgs' and
+                ev['data']['success']):
+                logging.info('Got package list for %s' % minion)
+                self._process_package_list_result(minion, ev)
         else:
-            print(ev)
+            logging.warning("Could not process: %s" % ev)
+        self.pending_jobs.remove(jid)
 
+    def _process_package_list_result(self, minion, ev):
+        package_list = ev['data']['return']
+        # Use xml-rpc for now to upload the packages
+        sid = self._is_registered(minion)
+        logging.info('Updating package list for Spacewalk sid=%s' % sid)
+        if sid:
+            packages = [{'name': 'zlib', 'epoch': '', 'version': '1.2.7', 'release': '0.10.128', 'arch': 'x86_64', 'installtime': 1413297811}]
+            server = rhnServer.search(int(sid))
+            server.dispose_packages()
+            for package in packages:
+                server.add_package(package)
+            server.save_packages()
+
+kernel = Saltwalk()
+kernel.run()
