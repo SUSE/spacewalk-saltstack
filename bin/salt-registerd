@@ -35,7 +35,7 @@ def register_system(data):
             values = grains[minion]['ret']
 
             query = rhnSQL.prepare('SELECT id from rhnServer WHERE digital_server_id=:did')
-            result = query.execute(did=('SALT-ID-%s' % values['server_id']))
+            result = query.execute(did=('SALT-ID-%s' % minion))
 
             if result > 0:
                 logging.info('System %s is already registered' % minion)
@@ -66,7 +66,7 @@ def register_system(data):
             # reserve the id
             newserv.getid()
             # overrite the digital id
-            newserv.server['digital_server_id'] =  'SALT-ID-%s' % values['server_id']
+            newserv.server['digital_server_id'] =  'SALT-ID-%s' % minion
             newserv.server['release'] = values['osrelease']
             newserv.server['os'] = values['osfullname']
             newserv.server['name'] = minion
