@@ -61,6 +61,7 @@ def register_system(data):
             newserv.server['release'] = values['osrelease']
             newserv.server['os'] = values['osfullname']
             newserv.server['name'] = minion
+            newserv.server['running_kernel'] = values['kernelrelease']
             newserv.virt_uuid = None
             newserv.save()
 
