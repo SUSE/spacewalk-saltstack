@@ -111,6 +111,7 @@ class Saltwalk:
                     logging.warning('Not handling event %s' % ev['tag'])
 
     def _is_registered(self, minion):
+        """Returns sid if a minion is registered, False otherwise"""
         query = rhnSQL.prepare('SELECT id from rhnServer WHERE digital_server_id=:did')
         result = query.execute(did=('SALT-ID-%s' % minion))
 
