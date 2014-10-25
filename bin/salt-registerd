@@ -172,32 +172,23 @@ class Saltwalk:
             return
 
         logging.info('Updating job status for sid %s: (%s) jid: %s' % (sid, minion, jid))
-        # figure the action id with the job id
-        saltjobs_cursor = rhnSQL.prepare("""
-        select distinct action_id from rhnActionSaltJob where jid=:jid
-        """)
-        saltjobs_cursor.execute(jid=jid)
+        cursor = rhnSQL.prepare("""
+        update rhnServerAction set
+        status=:status,
+        result_msg=:result_msg,
+        result_code=:result_code,
+        completion_time=:completion_time
+        where action_id in
+           (select distinct action_id from rhnActionSaltJob where jid=:jid)
+        and server_id=:sid""")
 
-        rows = saltjobs_cursor.fetchall_dict()
-        if not rows:
-            logging.warning('No action for jid %s' % jid)
-            return
-
-        for row in rows:
-            actions_cursor = rhnSQL.prepare("""
-            update rhnServerAction set
-            status=:status,
-            result_code=:result_code,
-            result_msg=:result_msg,
-            completion_time=:completion_time
-            where
-            action_id=:action_id and server_id=:server_id
-            """)
-            result_code = 0 if ev['data']['success'] else 1
-            actions_cursor.execute(
-                action_id=row['action_id'], server_id=sid,
-                status=2, result_code=result_code, result_msg=ev['data']['return'],
-                completion_time=ev['data']['_stamp'])
+        status = 2 if ev['data']['success'] else 1
+        cursor.execute(
+            sid=sid,
+            status=status, result_code=ev['data']['retcode'],
+            result_msg=json.dumps(ev['data']['return']),
+            completion_time=ev['data']['_stamp'],
+            jid=jid)
         rhnSQL.commit()
 
     def _request_minion_info(self, minion, cmd, desc):
