@@ -188,7 +188,7 @@ class Saltwalk:
         cursor.execute(
             sid=sid,
             status=status, result_code=ev['data']['retcode'],
-            result_msg=json.dumps(ev['data']['return']),
+            result_msg=json.dumps(ev['data']['return'])[:1024],
             completion_time=ev['data']['_stamp'],
             jid=jid)
         rhnSQL.commit()
