@@ -48,15 +48,7 @@ the status will be updated.
 
 ## TODO
 
-* The reactor is using a hardcoded '1-SALT' registration key
-* The reactor is using a hardcoded 'admin' user to create the new registered server
-* The reactor is writing a fake package inventory list. EVR spliting needs to be
-  done from the Salt stack data we receive (not done yet).
-
-* Cleanup all actions for jobs that completed in salt-master at reactor startup
-  (for all jobs that completed when the reactor was down). Beware of race conditions.
-
-* Figure out how to refresh the hardware inventory after rpm db changes
+See https://github.com/SUSE/spacewalk-saltstack/issues
 
 ## Authors
 
