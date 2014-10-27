@@ -25,7 +25,7 @@ This process allows you to integrate a Saltstack environment in Spacewalk.
 * Some patches to Spacewalk to introduce a SaltJob Action type
 * Run salt-api locally in the Spacewalk so that the webapp can interact with it
 
-## Inner workins
+## Inner workings
 
 The reactor reads events from the master in a loop. It reacts to the following
 events.
