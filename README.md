@@ -48,8 +48,12 @@ the status will be updated.
 
 ## TODO
 
+* The reactor is using a hardcoded '1-SALT' registration key
+* The reactor is using a hardcoded 'admin' user to create the new registered server
+
 * Cleanup all actions for jobs that completed in salt-master at reactor startup
-  (for all jobs that completed when the reactor was down)
+  (for all jobs that completed when the reactor was down). Beware of race conditions.
+
 * Figure out how to refresh the hardware inventory after rpm db changes
 
 ## Authors
