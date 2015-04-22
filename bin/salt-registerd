@@ -3,12 +3,11 @@
 #
 # Licensed under the MIT license. See MIT-LICENSE for details.
 #
-#from spacewalk.common.rhnException import rhnFault
+
 import logging
-import sys
 import re
 import traceback
-
+import sys
 import json
 import salt.utils.event
 import salt.client
@@ -16,7 +15,8 @@ import salt.client
 from spacewalk.common import rhnFlags
 from spacewalk.server import rhnUser, rhnServer, rhnSQL
 from spacewalk.server import rhnAction
-from spacewalk.common.rhnConfig import CFG, initCFG
+from spacewalk.common.rhnConfig import initCFG
+from spacewalk.common.rhnException import rhnFault
 from rhn import rpclib
 
 initCFG()
@@ -25,7 +25,15 @@ logging.getLogger().addHandler(logging.StreamHandler())
 
 SALT_JOB_ACTION_TYPE_ID = 503
 
+# TODO: Pillar? Env var? Command line option?
+XMLRPC_URL = "http://localhost/XMLRPC"
+
+
 def register_system(data):
+    """
+    TODO: doc
+    """
+
     local = salt.client.LocalClient()
     minion = data['data']['id']
 
@@ -34,13 +42,12 @@ def register_system(data):
     ret = local.cmd_iter(minion, 'grains.items')
 
     for grains in ret:
-        print(grains)
+        logging.debug(grains)
 
-        if grains.has_key(minion):
-
+        if minion in grains:
             values = grains[minion]['ret']
 
-            # cheat
+            # FIXME: cheat
             user = rhnUser.search('admin')
 
             rhnSQL.clear_log_id()
@@ -52,18 +59,18 @@ def register_system(data):
             # tokens_obj = rhnServer.search_org_token(user.contact["org_id"])
             # rhnFlags.set("universal_registration_token", tokens_obj)
             #
-            # XXX Hackweek hardcoded!
+            # FIXME: Hackweek hardcoded!
             tokens_obj = rhnServer.search_token('1-SALT')
 
-            #log_user_id = tokens_obj.get_user_id()
+            # log_user_id = tokens_obj.get_user_id()
             rhnFlags.set("registration_token", tokens_obj)
 
             # Use a generated spacewalk id for now
-            #newserv.server.data['id'] = (234234234, 0)
+            # newserv.server.data['id'] = (234234234, 0)
             # reserve the id
             newserv.getid()
             # overrite the digital id
-            newserv.server['digital_server_id'] =  'SALT-ID-%s' % minion
+            newserv.server['digital_server_id'] = 'SALT-ID-%s' % minion
             newserv.server['release'] = values['osrelease']
             newserv.server['os'] = values['osfullname']
             newserv.server['name'] = minion
@@ -73,79 +80,91 @@ def register_system(data):
 
             rhnSQL.commit()
 
-            logging.info("%s registered as %s" % (minion, newserv.getid()))
+            logging.info("%s registered as %s", minion, newserv.getid())
         else:
-            logging.warning("Can't get grains for %s" % minion)
+            logging.warning("Can't get grains for %s", minion)
+
 
 class Saltwalk:
+    """
+    TODO: doc
+    """
 
     def __init__(self):
         self.event_src = salt.utils.event.MasterEvent('/var/run/salt/master')
         self.pending_jobs = set()
         self.local = salt.client.LocalClient()
-
-        XMLRPC_URL = "http://localhost/XMLRPC"
         self.rpc = rpclib.Server(XMLRPC_URL)
 
     def run(self):
-        for ev in self.event_src.iter_events(full=True):
+        """
+        TODO: doc
+        """
+        for event in self.event_src.iter_events(full=True):
             # other possible values:
             # salt/key act accept, act reject
             # salt/auth
-            if ev['tag'] == 'salt/auth':
-                minion = ev['data']['id']
-                logging.info("minion %s authenticated" % minion)
-                # XXX do we need to do something?
-            elif ev['tag'] == 'minion_start':
-                minion = ev['data']['id']
-                logging.info('minion %s started' % minion)
+            if event['tag'] == 'salt/auth':
+                minion = event['data']['id']
+                logging.info("minion %s authenticated", minion)
+                # TODO: do we need to do something?
+            elif event['tag'] == 'minion_start':
+                minion = event['data']['id']
+                logging.info('minion %s started', minion)
                 if not self._is_registered(minion):
-                    register_system(ev)
+                    register_system(event)
                 self._request_package_list(minion)
                 self._request_network_ifaces(minion)
-            elif re.match(r'salt/job/\d+/new', ev['tag']):
+            elif re.match(r'salt/job/\d+/new', event['tag']):
                 # create spacewalk action if the job was not created
                 # by this reactor
-                jid = ev['data']['jid']
-                if not jid in self.pending_jobs:
-                    logging.info('Adding job %s to Spacewalk' % jid)
-                    self._create_actions_for_job(ev)
-            elif re.match(r'salt/job/\d+/ret/\S+', ev['tag']):
+                jid = event['data']['jid']
+                if jid not in self.pending_jobs:
+                    logging.info('Adding job %s to Spacewalk', jid)
+                    self._create_actions_for_job(event)
+            elif re.match(r'salt/job/\d+/ret/\S+', event['tag']):
                 # minion return values
                 if jid in self.pending_jobs:
-                    self._process_result(jid, ev)
+                    self._process_result(jid, event)
                 else:
-                    logging.warning('Job event %s not generated by us' % ev['tag'])
+                    logging.warning('Job event %s not generated by us',
+                                    event['tag'])
                     try:
-                        self._update_actions_for_job(ev)
-                    except:
-                        traceback.print_exc()
-                        logging.error(ev)
+                        self._update_actions_for_job(event)
+                    except rhnFault as err:
+                        logging.exception("%s: %s", err, event)
             else:
-                logging.warning('Not handling event %s' % ev['tag'])
+                logging.warning('Not handling event %s', event['tag'])
 
     def _is_registered(self, minion):
-        """Returns sid if a minion is registered, False otherwise"""
-        query = rhnSQL.prepare('SELECT id from rhnServer WHERE digital_server_id=:did')
+        """
+        Returns sid if a minion is registered, False otherwise
+        """
+        query = rhnSQL.prepare(
+            'SELECT id from rhnServer WHERE digital_server_id=:did')
         result = query.execute(did=('SALT-ID-%s' % minion))
 
         if result > 0:
             return query.fetchone_dict()['id']
         return False
 
-    def _create_actions_for_job(self, ev):
-        jid = ev['data']['jid']
-        minions = ev['data']['minions']
-        fun = ev['data']['fun']
+    def _create_actions_for_job(self, event):
+        """
+        TODO: doc
+        """
+        jid = event['data']['jid']
+        minions = event['data']['minions']
+        fun = event['data']['fun']
         try:
             aid = rhnAction.schedule_action(action_type='salt.job',
-                                            action_name='Salt job %s (%s)' % (jid, fun),
+                                            action_name='Salt job %s (%s)' %
+                                            (jid, fun),
                                             org_id=1)
             cursor = rhnSQL.prepare("""
             insert into rhnActionSaltJob (action_id, jid, data)
             values (:action_id, :jid, :data)
             """)
-            cursor.execute(action_id=aid, jid=jid, data=json.dumps(ev['data']))
+            cursor.execute(action_id=aid, jid=jid, data=json.dumps(event['data']))
             for minion in minions:
                 sid = self._is_registered(minion)
                 if not sid > 0:
@@ -154,25 +173,30 @@ class Saltwalk:
                 insert into rhnServerAction (server_id, action_id, status, pickup_time)
                 values (:server_id, :action_id, 0, :pickup_time)
                 """)
-                cursor.execute(server_id=sid, action_id=aid, pickup_time=ev['data']['_stamp'])
+                cursor.execute(server_id=sid, action_id=aid,
+                               pickup_time=event['data']['_stamp'])
             rhnSQL.commit()
-        except:
-            logging.error(traceback.format_exc())
+        except rhnFault as err:
+            logging.exception(err)
             rhnSQL.rollback()
 
-    def _update_actions_for_job(self, ev):
-        """Takes an function return event and sets the
-        status of the corresponding Spacewalk job"""
-        jid = ev['data']['jid']
-        minion = ev['data']['id']
+    def _update_actions_for_job(self, event):
+        """
+        Takes an function return event and sets the
+        status of the corresponding Spacewalk job.
+        """
+        jid = event['data']['jid']
+        minion = event['data']['id']
 
         sid = self._is_registered(minion)
         if not sid > 0:
-            logging.error('minion %s is not registered anymore' % minion)
-            # XXX cleanup its actions?
+            logging.error('minion %s is not registered anymore', minion)
+            # FIXME: cleanup its actions?
             return
 
-        logging.info('Updating job status for sid %s: (%s) jid: %s' % (sid, minion, jid))
+        logging.info('Updating job status for sid %s: (%s) jid: %s',
+                     sid, minion, jid)
+
         cursor = rhnSQL.prepare("""
         update rhnServerAction set
         status=:status,
@@ -183,48 +207,64 @@ class Saltwalk:
            (select distinct action_id from rhnActionSaltJob where jid=:jid)
         and server_id=:sid""")
 
-        status = 2 if ev['data']['success'] else 1
-        cursor.execute(
-            sid=sid,
-            status=status, result_code=ev['data']['retcode'],
-            result_msg=json.dumps(ev['data']['return'])[:1024],
-            completion_time=ev['data']['_stamp'],
-            jid=jid)
+        status = 2 if event['data']['success'] else 1
+        cursor.execute(sid=sid,
+                       status=status, result_code=event['data']['retcode'],
+                       result_msg=json.dumps(event['data']['return'])[:1024],
+                       completion_time=event['data']['_stamp'],
+                       jid=jid)
         rhnSQL.commit()
 
     def _request_minion_info(self, minion, cmd, desc):
+        """
+        TODO: doc
+        """
         jobid = self.local.cmd_async(minion, cmd)
         if jobid != 0:
-            logging.info("requested p %s for %s (jid %s)" % (desc, minion, jobid))
+            logging.info("requested p %s for %s (jid %s)",
+                         desc, minion, jobid)
             self.pending_jobs.add(jobid)
 
     def _request_package_list(self, minion):
+        """
+        TODO: doc
+        """
         self._request_minion_info(minion, 'pkg.list_pkgs', 'package list')
 
     def _request_network_ifaces(self, minion):
-        self._request_minion_info(minion, 'network.interfaces', 'network interfaces')
+        """
+        TODO: doc
+        """
+        self._request_minion_info(minion, 'network.interfaces',
+                                  'network interfaces')
 
-    def _process_result(self, jid, ev):
-        if ev.has_key('data') and ev['data'].has_key('id'):
-            minion = ev['data']['id']
+    def _process_result(self, jid, event):
+        """
+        TODO: doc
+        """
+        if 'data' in event and 'id' in event['data']:
+            minion = event['data']['id']
+            fun = event['data']['fun']
 
-            fun = ev['data']['fun']
             if fun == 'pkg.list_packages':
-                self._process_package_list_result(minion, ev)
+                self._process_package_list_result(minion, event)
             elif fun == 'network.interfaces':
-                self._process_network_ifaces_result(minion, ev)
+                self._process_network_ifaces_result(minion, event)
             else:
-                logging.warning('No handler for: %s' % ev)
+                logging.warning('No handler for: %s', event)
         else:
-            logging.warning('Cant process %s' % ev)
+            logging.warning('Cant process %s', event)
         self.pending_jobs.remove(jid)
 
-    def _process_network_ifaces_result(self, minion, ev):
+    def _process_network_ifaces_result(self, minion, event):
+        """
+        TODO: doc
+        """
         sid = self._is_registered(minion)
-        logging.info('Got network interfaces for %s' % sid)
+        logging.info('Got network interfaces for %s', sid)
         if not sid:
             return
-        ret = ev['data']['return']
+        ret = event['data']['return']
         profile = dict()
 
         profile['class'] = 'NETINTERFACES'
@@ -232,44 +272,69 @@ class Saltwalk:
             profile[iface] = dict()
             profile[iface]['ipv6'] = list()
             profile[iface]['hwaddr'] = details['hwaddr']
-            # XXX how to get the iface module with Salt?
+            # FIXME: how to get the iface module with Salt?
             profile[iface]['module'] = 'Unknown'
 
             # only one ipv4 addr supported
-            for ipv4net in  details['inet']:
+            for ipv4net in details['inet']:
                 profile[iface]['ipaddr'] = ipv4net['address']
                 profile[iface]['netmask'] = ipv4net['netmask']
                 profile[iface]['broadcast'] = ipv4net['broadcast']
                 break
 
-            for ipv6net in  details['inet6']:
+            for ipv6net in details['inet6']:
                 ipv6net['scope'] = 'Unknown'
                 ipv6net['addr'] = ipv6net['address']
                 ipv6net['netmask'] = ipv6net['prefixlen']
                 profile[iface]['ipv6'].append(ipv6net)
 
         server = rhnServer.search(int(sid))
+
         # No need to delete the hardware as the class seems to ovewrite
         # the previous value
         server.add_hardware(profile)
         server.save_hardware()
 
-    def _process_package_list_result(self, minion, ev):
-        logging.info('Got package list for %s' % minion)
-        if not ev['data']['success']:
+    def _process_package_list_result(self, minion, event):
+        """
+        TODO: doc
+        """
+        if not event['data']['success']:
             return
+        logging.info('Got package list for %s', minion)
 
-        package_list = ev['data']['return']
+        # TODO: why?
+        package_list = event['data']['return']
+
         # Use xml-rpc for now to upload the packages
         sid = self._is_registered(minion)
-        logging.info('Updating package list for Spacewalk sid=%s' % sid)
+        logging.info('Updating package list for Spacewalk sid=%s', sid)
         if sid:
-            packages = [{'name': 'zlib', 'epoch': '', 'version': '1.2.7', 'release': '0.10.128', 'arch': 'x86_64', 'installtime': 1413297811}]
+            packages = [{'name': 'zlib',
+                         'epoch': '',
+                         'version': '1.2.7',
+                         'release': '0.10.128',
+                         'arch': 'x86_64',
+                         'installtime': 1413297811}]
             server = rhnServer.search(int(sid))
             server.dispose_packages()
             for package in packages:
                 server.add_package(package)
             server.save_packages()
 
-kernel = Saltwalk()
-kernel.run()
+
+def main():
+    """
+    Entry point to the Salt Spacewalk integration reactor
+    """
+    result = 0
+
+    # TODO: unroll Saltwalk a bit more
+    kernel = Saltwalk()
+    kernel.run()
+
+    return result
+
+
+if __name__ == "__main__":
+    sys.exit(main())
