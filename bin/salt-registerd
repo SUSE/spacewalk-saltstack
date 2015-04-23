@@ -306,9 +306,13 @@ def process_result(event):
 
 def main():
     """
-    Entry point to the Salt Spacewalk integration reactor
+    Entry point to the Spacewalk reactor
     """
     result = 0
+
+    logger.info("###############################")
+    logger.info("# Starting Spacewalk reactor. #")
+    logger.info("###############################\n")
 
     initCFG()
     rhnSQL.initDB()
@@ -322,6 +326,8 @@ def main():
     event_source = salt.utils.event.MasterEvent('/var/run/salt/master')
     client = salt.client.LocalClient()
 
+    # TODO: InterruptException for a clean exit
+    logger.info("Entering event loop.")
     for event in event_source.iter_events(full=True):
         # other possible values:
         # salt/key act accept, act reject
