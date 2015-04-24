@@ -10,8 +10,8 @@ This is a standlone program and not meant to be imported.
 
 import logging
 import re
-import sys
 import json
+import argparse
 from contextlib import contextmanager
 
 import salt.utils.event
@@ -22,23 +22,37 @@ from spacewalk.server import rhnUser, rhnServer, rhnSQL
 from spacewalk.server import rhnAction
 from spacewalk.common.rhnConfig import initCFG
 from spacewalk.common.rhnException import rhnFault
-# TODO: is this needed?
-from rhn import rpclib
 
 logger = logging.getLogger("spacewalk.salt-reactor")
-logger.addHandler(logging.StreamHandler())
+handler = logging.StreamHandler()
+formatter = logging.Formatter('[%(levelname)s] %(asctime)s :: %(message)s')
+handler.setFormatter(formatter)
+logger.addHandler(handler)
+logger.setLevel(logging.INFO)
 
 # TODO: Where does this fit in?
 SALT_JOB_ACTION_TYPE_ID = 503
 
-# TODO: is this needed?
-XMLRPC_URL = "http://localhost/XMLRPC"
+# TODO: make configurable?
+MASTER_EVENT_PATH = '/var/run/salt/master'
+
+PILLAR_GET_CMD = 'pillar.get'
+NETWORK_IFACES_CMD = 'network.interfaces'
+LIST_PKGS_CMD = 'pkg.list_pkgs'
+GRAINS_ITEMS_CMD = 'grains.items'
+
+# TODO: make configurable?
+ACTIVATION_TOKEN_KEY = 'spacewalk-activation-token'
+# TODO: make configurable?
+ADMIN_USER_KEY = 'spacewalk-admin-user'
 
 
 @contextmanager
 def transaction(context=None):
     """
-    TODO: doc
+    Keeping writes to spacewalk as DRY as possible,
+    and making sure that commit or rollback is always
+    called as appropriate.
     """
     try:
         yield
@@ -51,45 +65,40 @@ def transaction(context=None):
         rhnSQL.rollback()
 
 
-def register_system(client, data):
+def register_system(client, minion):
     """
-    TODO: doc
+    Adds a spacewalk registration for a minion.
     """
-    minion = data['data']['id']
-
     # ask for the minion data to get its id that tell us
     # if it is registered, and data to register it
-    ret = client.cmd_iter(minion, 'grains.items')
+    ret = client.cmd_iter(minion, GRAINS_ITEMS_CMD)
 
     for grains in ret:
+        logger.info("Registering new minion: %s", minion)
         logger.debug(grains)
 
         if minion in grains:
             values = grains[minion]['ret']
 
-            # FIXME: cheat
-            user = rhnUser.search('admin')
+            username = client.cmd(minion, PILLAR_GET_CMD, [ADMIN_USER_KEY])
+            user = rhnUser.search(username[minion])
 
             rhnSQL.clear_log_id()
             newserv = rhnServer.Server(user, values['osarch'])
 
-            # Idea. In the future, search for the reg key using
-            # pillars. Then if no key is found for a system
-            # use
-            # tokens_obj = rhnServer.search_org_token(user.contact["org_id"])
-            # rhnFlags.set("universal_registration_token", tokens_obj)
-            #
-            # FIXME: Hackweek hardcoded!
-            tokens_obj = rhnServer.search_token('1-SALT')
+            token = client.cmd(minion, PILLAR_GET_CMD, [ACTIVATION_TOKEN_KEY])
 
-            # log_user_id = tokens_obj.get_user_id()
-            rhnFlags.set("registration_token", tokens_obj)
+            if not token[minion]:
+                tokens_obj = rhnServer.search_org_token(user.contact["org_id"])
+                rhnFlags.set("universal_registration_token", tokens_obj)
+            else:
+                tokens_obj = rhnServer.search_token(token[minion])
+                rhnFlags.set("registration_token", tokens_obj)
 
-            # Use a generated spacewalk id for now
-            # newserv.server.data['id'] = (234234234, 0)
             # reserve the id
             newserv.getid()
             # overrite the digital id
+            # FIXME: None of these values appear in the systems properties
             newserv.server['digital_server_id'] = 'SALT-ID-%s' % minion
             newserv.server['release'] = values['osrelease']
             newserv.server['os'] = values['osfullname']
@@ -122,8 +131,11 @@ def is_minion_registered(minion):
 
 def create_actions_for_job(event):
     """
-    TODO: doc
+    For jobs that originated outside of this system
+    we create coresponding events in spacewalk
     """
+    # FIXME: Unkown action type salt.job.
+    return
     jid = event['data']['jid']
     minions = event['data']['minions']
     fun = event['data']['fun']
@@ -156,9 +168,11 @@ def create_actions_for_job(event):
 
 def update_actions_for_job(event):
     """
-    Takes an function return event and sets the
+    Takes an salt command return event and sets the
     status of the corresponding Spacewalk job.
     """
+    # FIXME: I think this also requires a patch to spacewalk.
+    return
     jid = event['data']['jid']
     minion = event['data']['id']
 
@@ -197,11 +211,11 @@ def request_minion_info(client, minion, cmd, desc):
     """
     jobid = client.cmd_async(minion, cmd)
     if jobid != 0:
-        logger.info("Requested p %s for %s (jid %s)",
+        logger.info("Requested %s for %s (jid %s)",
                     desc, minion, jobid)
         return jobid
     else:
-        logger.warn("Request p %s failed for %s",
+        logger.warn("Request %s failed for %s",
                     desc, minion)
         return False
 
@@ -211,7 +225,7 @@ def request_package_list(client, minion):
     Returns the jobid for an async request for the minions
     package list, False otherwise
     """
-    return request_minion_info(client, minion, 'pkg.list_pkgs', 'package list')
+    return request_minion_info(client, minion, LIST_PKGS_CMD, 'package list')
 
 
 def request_network_ifaces(client, minion):
@@ -219,30 +233,34 @@ def request_network_ifaces(client, minion):
     Returns the jobid for an async request for the minions
     network interface information, False otherwise
     """
-    return request_minion_info(client, minion, 'network.interfaces',
+    return request_minion_info(client, minion, NETWORK_IFACES_CMD,
                                'network interfaces')
 
 
 def process_network_ifaces_result(minion, event):
     """
-    TODO: doc
+    Updates the spacewalk registration for a minion
+    with it's currently reported network interface list.
     """
     sid = is_minion_registered(minion)
     if not sid:
+        logger.warning("%s is not registered. Interfaces ignored.", minion)
         return
-    logger.info('Got network interfaces for %s', sid)
-    ret = event['data']['return']
+
     profile = dict()
+    interfaces = event['data']['return']
+    logger.info('Got network interfaces for %s', sid)
+    logger.debug(interfaces)
 
     profile['class'] = 'NETINTERFACES'
-    for iface, details in ret.iteritems():
+    for iface, details in interfaces.iteritems():
         profile[iface] = dict()
         profile[iface]['ipv6'] = list()
         profile[iface]['hwaddr'] = details['hwaddr']
         # FIXME: how to get the iface module with Salt?
         profile[iface]['module'] = 'Unknown'
 
-        # only one ipv4 addr supported (TODO: upstream constraint?)
+        # only one ipv4 addr supported
         for ipv4net in details['inet']:
             profile[iface]['ipaddr'] = ipv4net['address']
             profile[iface]['netmask'] = ipv4net['netmask']
@@ -265,13 +283,16 @@ def process_network_ifaces_result(minion, event):
 
 def process_package_list_result(minion, event):
     """
-    TODO: doc
+    Updates the server registration of the minion with
+    the list of packages reported by salt.
     """
+    # FIXME: When this runs I was getting an AttributeError,
+    #        "dbPackage instance has no attribute 'nvrea'"
     logger.info('Got package list for %s', minion)
 
-    package_list = event['data']['return']
-
     sid = is_minion_registered(minion)
+
+    package_list = event['data']['return']
 
     if sid:
         logger.info('Updating package list for Spacewalk sid=%s', sid)
@@ -284,96 +305,131 @@ def process_package_list_result(minion, event):
 
 def process_result(event):
     """
-    TODO: doc
+    Dispatch to the specific return handler for a command
+    issued to a minion.
+    Current commands supported/expected:
+      - pkg.list_pkgs
+      - network.interfaces
     """
-    if 'data' in event and 'id' in event['data']:
-        minion = event['data']['id']
-        fun = event['data']['fun']
+    try:
+        data = event['data']
+        tag = event['tag']
+        minion = data['id']
+        fun = data['fun']
+    except KeyError as error:
+        logger.exception('Unexpected event format for %s. %s', tag, error)
+        return
 
-        if fun == 'pkg.list_packages':
-            if event['data']['success']:
+    try:
+        if data['success']:
+            if fun == LIST_PKGS_CMD:
                 process_package_list_result(minion, event)
+            elif fun == NETWORK_IFACES_CMD:
+                process_network_ifaces_result(minion, event)
             else:
-                # TODO: actually log something
-                logger.warn("")
-        elif fun == 'network.interfaces':
-            process_network_ifaces_result(minion, event)
+                logger.warning("No handler for: %s -> %s", tag, fun)
         else:
-            logger.warning('No handler for: %s', event)
-    else:
-        logger.warning('Cant process %s', event)
+            logger.error("Event reports that the command failed: %s -> %s",
+                         minion, fun)
+    except Exception as error:
+        logger.exception('Unable to process event %s. %s', tag, error)
+
+
+def minion_startup(client, minion):
+    """
+    When a minion starts up this function will
+    grab it's current list of network interfaces, and
+    installed packages, then update it's spacewalk
+    registration.
+    """
+    job_ids = set()
+    package_list_job_id = request_package_list(client, minion)
+    if package_list_job_id:
+        job_ids.add(package_list_job_id)
+    network_ifaces_job_id = request_network_ifaces(client, minion)
+    if network_ifaces_job_id:
+        job_ids.add(network_ifaces_job_id)
+    return job_ids
 
 
 def main():
     """
-    Entry point to the Spacewalk reactor
+    Entry point to the Spacewalk reactor. This program will
+    wait for events from the salt master indefinitely.
     """
-    result = 0
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", help="Enable debug logging",
+                        action="store_true", default=False)
+
+    args = parser.parse_args()
 
     logger.info("###############################")
     logger.info("# Starting Spacewalk reactor. #")
     logger.info("###############################\n")
+
+    if args.debug:
+        logger.setLevel(logging.DEBUG)
+        logger.info("Verbose output enabled.")
 
     initCFG()
     rhnSQL.initDB()
 
     pending_jobs = set()
 
-    # TODO: is this needed?
-    # In the original this was only referred to in the constructor.
-    rpc = rpclib.Server(XMLRPC_URL)
-
-    event_source = salt.utils.event.MasterEvent('/var/run/salt/master')
+    event_source = salt.utils.event.MasterEvent(MASTER_EVENT_PATH)
     client = salt.client.LocalClient()
 
-    # TODO: InterruptException for a clean exit
     logger.info("Entering event loop.")
     for event in event_source.iter_events(full=True):
+        try:
+            data = event['data']
+            tag = event['tag']
+        except KeyError as error:
+            logger.exception("Unable to process malformed event: %s. %s",
+                             event, error)
+            continue
+
+        # Not every command will have this field
+        minion = data.get('id', None)
+
         # other possible values:
         # salt/key act accept, act reject
         # salt/auth
-        if event['tag'] == 'salt/auth':
-            minion = event['data']['id']
+        if tag == 'salt/auth':
             logger.info("minion %s authenticated", minion)
-            # TODO: do we need to do something?
+            # TODO: do we need to do something? Update checkin time?
 
-        elif event['tag'] == 'minion_start':
-            minion = event['data']['id']
+        elif tag == 'minion_start':
             logger.info('minion %s started', minion)
+            # Register if this is the first time we've seen the minion
             if not is_minion_registered(minion):
-                register_system(client, event)
+                register_system(client, minion)
+            job_ids = minion_startup(client, minion)
+            pending_jobs.update(job_ids)
 
-            package_list_job_id = request_package_list(client, minion)
-            if package_list_job_id:
-                pending_jobs.add(package_list_job_id)
-
-            network_ifaces_job_id = request_network_ifaces(client, minion)
-            if network_ifaces_job_id:
-                pending_jobs.add(network_ifaces_job_id)
-
-        elif re.match(r'salt/job/\d+/new', event['tag']):
-            # create spacewalk action if the job was not created
-            # by this reactor
-            jid = event['data']['jid']
-            if jid not in pending_jobs:
-                logger.info('Adding job %s to Spacewalk', jid)
+        elif tag.startswith('salt/job'):
+            # process a job event
+            match = re.match(r'salt/job/\d+/(new|ret)/*.*', tag)
+            if not match:
+                logger.warning("Unsupported job event: %s", tag)
+                continue
+            job_state = match.groups()[0]
+            jid = data['jid']
+            logger.info("Processing job: %s", jid)
+            if job_state == 'new' and jid not in pending_jobs:
                 create_actions_for_job(event)
-
-        elif re.match(r'salt/job/\d+/ret/\S+', event['tag']):
-            # minion return values
-            if jid in pending_jobs:
-                logger.info("processing job result for %s", jid)
-                pending_jobs.remove(jid)
-                process_result(event)
+            elif job_state == 'ret':
+                if jid in pending_jobs:
+                    pending_jobs.remove(jid)
+                    process_result(event)
+                else:
+                    update_actions_for_job(event)
             else:
-                logger.warning('Job event %s not generated by us',
-                               event['tag'])
-                update_actions_for_job(event)
+                logger.error("Unexpected job_state: %s", job_state)
         else:
-            logger.warning('Not handling event %s', event['tag'])
-
-    return result
+            logger.warning('Not handling event %s', tag)
+            logger.debug(event)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
