@@ -281,18 +281,29 @@ def process_network_ifaces_result(minion, event):
         server.save_hardware()
 
 
+def format_package_list(packages):
+    """
+    Take the package list provided by salt and
+    format it as spacewalk expects it.
+    """
+    # FIXME: Fake data needs to be sourced correctly
+    def frmt_pkg(name, version):
+        return {'name': name, 'version': version,
+                'epoch': '', 'release': '0.10.128',
+                'arch': 'x86_64', 'installtime': 1413297811}
+    return [frmt_pkg(name, version) for name, version in packages.items()]
+
+
 def process_package_list_result(minion, event):
     """
     Updates the server registration of the minion with
     the list of packages reported by salt.
     """
-    # FIXME: When this runs I was getting an AttributeError,
-    #        "dbPackage instance has no attribute 'nvrea'"
     logger.info('Got package list for %s', minion)
 
     sid = is_minion_registered(minion)
 
-    package_list = event['data']['return']
+    package_list = format_package_list(event['data']['return'])
 
     if sid:
         logger.info('Updating package list for Spacewalk sid=%s', sid)
