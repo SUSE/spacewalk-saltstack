@@ -416,8 +416,9 @@ def main():
             job_state = match.groups()[0]
             jid = data['jid']
             logger.info("Processing job: %s", jid)
-            if job_state == 'new' and jid not in pending_jobs:
-                create_actions_for_job(event)
+            if job_state == 'new':
+                if jid not in pending_jobs:
+                    create_actions_for_job(event)
             elif job_state == 'ret':
                 if jid in pending_jobs:
                     pending_jobs.remove(jid)
@@ -425,7 +426,7 @@ def main():
                 else:
                     update_actions_for_job(event)
             else:
-                logger.error("Unexpected job_state: %s", job_state)
+                logger.warning("Unexpected job_state: %s", job_state)
         else:
             logger.warning('Not handling event %s', tag)
             logger.debug(event)
