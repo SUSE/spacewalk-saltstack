@@ -57,9 +57,10 @@ def transaction(context=None):
     try:
         yield
         rhnSQL.commit()
-    except rhnFault as error:
+    except Exception as error:
         if context is not None:
             logger.exception("%s: %s", error, context)
+            logger.info("Rolling back rhnSQL transaction.")
         else:
             logger.exception("Rolling back rhnSQL transaction: %s", error)
         rhnSQL.rollback()
@@ -75,10 +76,10 @@ def register_system(client, minion):
 
     for grains in ret:
         logger.info("Registering new minion: %s", minion)
-        logger.debug(grains)
 
         if minion in grains:
             values = grains[minion]['ret']
+            logger.debug("%s grains: %s", minion, values)
 
             username = client.cmd(minion, PILLAR_GET_CMD, [ADMIN_USER_KEY])
             user = rhnUser.search(username[minion])
@@ -129,13 +130,12 @@ def is_minion_registered(minion):
     return result
 
 
+# FIXME: Unkown action type salt.job.
 def create_actions_for_job(event):
     """
     For jobs that originated outside of this system
     we create coresponding events in spacewalk
     """
-    # FIXME: Unkown action type salt.job.
-    return
     jid = event['data']['jid']
     minions = event['data']['minions']
     fun = event['data']['fun']
@@ -166,13 +166,12 @@ def create_actions_for_job(event):
                            pickup_time=event['data']['_stamp'])
 
 
+# FIXME: I think this also requires a patch to spacewalk.
 def update_actions_for_job(event):
     """
     Takes an salt command return event and sets the
     status of the corresponding Spacewalk job.
     """
-    # FIXME: I think this also requires a patch to spacewalk.
-    return
     jid = event['data']['jid']
     minion = event['data']['id']
 
@@ -205,7 +204,7 @@ def update_actions_for_job(event):
                        jid=jid)
 
 
-def request_minion_info(client, minion, cmd, desc):
+def request_minion_info_async(client, minion, cmd, desc):
     """
     Returns jobid for async cmd that was dispatched, False otherwise
     """
@@ -225,7 +224,7 @@ def request_package_list(client, minion):
     Returns the jobid for an async request for the minions
     package list, False otherwise
     """
-    return request_minion_info(client, minion, LIST_PKGS_CMD, 'package list')
+    return request_minion_info_async(client, minion, LIST_PKGS_CMD, 'package list')
 
 
 def request_network_ifaces(client, minion):
@@ -233,8 +232,8 @@ def request_network_ifaces(client, minion):
     Returns the jobid for an async request for the minions
     network interface information, False otherwise
     """
-    return request_minion_info(client, minion, NETWORK_IFACES_CMD,
-                               'network interfaces')
+    return request_minion_info_async(client, minion, NETWORK_IFACES_CMD,
+                                     'network interfaces')
 
 
 def process_network_ifaces_result(minion, event):
@@ -289,7 +288,7 @@ def format_package_list(packages):
     # FIXME: Fake data needs to be sourced correctly
     def frmt_pkg(name, version):
         return {'name': name, 'version': version,
-                'epoch': '', 'release': '0.10.128',
+                'epoch': '', 'release': 'unknown',
                 'arch': 'x86_64', 'installtime': 1413297811}
     return [frmt_pkg(name, version) for name, version in packages.items()]
 
