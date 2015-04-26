@@ -25,7 +25,9 @@ from spacewalk.common.rhnException import rhnFault
 
 logger = logging.getLogger("spacewalk.salt-reactor")
 handler = logging.StreamHandler()
-formatter = logging.Formatter('[%(levelname)s] %(asctime)s :: %(message)s')
+formatter = logging.Formatter(
+    '[%(levelname)s] [%(name)s] [%(asctime)s] %(message)s'
+)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
@@ -33,7 +35,6 @@ logger.setLevel(logging.INFO)
 # TODO: Where does this fit in?
 SALT_JOB_ACTION_TYPE_ID = 503
 
-# TODO: make configurable?
 MASTER_EVENT_PATH = '/var/run/salt/master'
 
 PILLAR_GET_CMD = 'pillar.get'
@@ -210,11 +211,11 @@ def request_minion_info_async(client, minion, cmd, desc):
     """
     jobid = client.cmd_async(minion, cmd)
     if jobid != 0:
-        logger.info("Requested %s for %s (jid %s)",
+        logger.info("'%s' request for %s (jid %s)",
                     desc, minion, jobid)
         return jobid
     else:
-        logger.warn("Request %s failed for %s",
+        logger.warn("'%s' request failed for %s",
                     desc, minion)
         return False
 
@@ -224,7 +225,8 @@ def request_package_list(client, minion):
     Returns the jobid for an async request for the minions
     package list, False otherwise
     """
-    return request_minion_info_async(client, minion, LIST_PKGS_CMD, 'package list')
+    return request_minion_info_async(client, minion, LIST_PKGS_CMD,
+                                     'package list')
 
 
 def request_network_ifaces(client, minion):
@@ -345,21 +347,51 @@ def process_result(event):
         logger.exception('Unable to process event %s. %s', tag, error)
 
 
-def minion_startup(client, minion):
+def minion_startup(pending_jobs, client, minion):
     """
     When a minion starts up this function will
     grab it's current list of network interfaces, and
     installed packages, then update it's spacewalk
     registration.
+    If the calls are successful we add the job ids
+    to pending_jobs.
     """
-    job_ids = set()
     package_list_job_id = request_package_list(client, minion)
     if package_list_job_id:
-        job_ids.add(package_list_job_id)
+        pending_jobs.add(package_list_job_id)
     network_ifaces_job_id = request_network_ifaces(client, minion)
     if network_ifaces_job_id:
-        job_ids.add(network_ifaces_job_id)
-    return job_ids
+        pending_jobs.add(network_ifaces_job_id)
+    return pending_jobs
+
+
+def handle_job(pending_jobs, job_state, event):
+    """
+    When we get a job related event from salt we
+    either process the result from an async
+    command that we issued or we update spacewalk
+    with information about the job.
+    If we're receiving the result from a job we
+    created, we remove the job id from pending_jobs
+    """
+    jid = event['data']['jid']
+    logger.info("Processing job: %s", jid)
+    if job_state == 'new':
+        if jid not in pending_jobs:
+            logger.debug("Creating actions for job %s", jid)
+            create_actions_for_job(event)
+    elif job_state == 'ret':
+        if jid in pending_jobs:
+            logger.debug("Processing completed job request: %s", jid)
+            pending_jobs.remove(jid)
+            process_result(event)
+        else:
+            logger.debug("Updating actions for job %s", jid)
+            update_actions_for_job(event)
+    else:
+        logger.warning("Unexpected job_state: %s", job_state)
+        logger.debug(event)
+    return pending_jobs
 
 
 def main():
@@ -381,11 +413,14 @@ def main():
         logger.setLevel(logging.DEBUG)
         logger.info("Verbose output enabled.")
 
+    logger.debug("init config")
     initCFG()
+    logger.debug("init db")
     rhnSQL.initDB()
 
     pending_jobs = set()
 
+    logger.debug("creating event source and local client.")
     event_source = salt.utils.event.MasterEvent(MASTER_EVENT_PATH)
     client = salt.client.LocalClient()
 
@@ -414,29 +449,19 @@ def main():
             # Register if this is the first time we've seen the minion
             if not is_minion_registered(minion):
                 register_system(client, minion)
-            job_ids = minion_startup(client, minion)
-            pending_jobs.update(job_ids)
+            pending_jobs = minion_startup(pending_jobs, client, minion)
+            logger.debug("Pending jobs: %s", pending_jobs)
 
         elif tag.startswith('salt/job'):
             # process a job event
             match = re.match(r'salt/job/\d+/(new|ret)/*.*', tag)
             if not match:
                 logger.warning("Unsupported job event: %s", tag)
+                logger.debug(event)
                 continue
             job_state = match.groups()[0]
-            jid = data['jid']
-            logger.info("Processing job: %s", jid)
-            if job_state == 'new':
-                if jid not in pending_jobs:
-                    create_actions_for_job(event)
-            elif job_state == 'ret':
-                if jid in pending_jobs:
-                    pending_jobs.remove(jid)
-                    process_result(event)
-                else:
-                    update_actions_for_job(event)
-            else:
-                logger.warning("Unexpected job_state: %s", job_state)
+            pending_jobs = handle_job(pending_jobs, job_state, event)
+            logger.debug("Pending jobs: %s", pending_jobs)
         else:
             logger.warning('Not handling event %s', tag)
             logger.debug(event)
