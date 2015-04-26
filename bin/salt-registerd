@@ -79,8 +79,7 @@ def transaction(context=None):
         rhnSQL.commit()
     except rhnFault as fault:
         logger.exception("Server fault caught: %s", fault)
-        logger.info("Rolling back rhnSQL transaction.")
-        rhnSQL.rollback()
+        rollback()
     except Exception as error:
         msg = error.message
         if not msg:
@@ -88,7 +87,7 @@ def transaction(context=None):
             msg = str(error)
         if msg == "Unknown action type salt.job" or \
            msg.find('rhnactionsaltjob') != -1:
-            logger.error("Saltstack not fully supported by this system: %s.",
+            logger.error("Saltstack not fully supported by this system:\n%s.",
                          msg)
         else:
             log_exception(error)
