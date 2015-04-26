@@ -12,6 +12,7 @@ import logging
 import re
 import json
 import argparse
+from pprint import PrettyPrinter
 from contextlib import contextmanager
 
 import salt.utils.event
@@ -32,6 +33,8 @@ formatter = logging.Formatter(
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
+
+pp = PrettyPrinter(indent=2)
 
 # TODO: Where does this fit in?
 SALT_JOB_ACTION_TYPE_ID = 503
@@ -105,7 +108,7 @@ def register_system(client, minion):
 
         if minion in grains:
             values = grains[minion]['ret']
-            logger.debug("%s grains: %s", minion, values)
+            logger.debug("%s grains:\n%s", minion, pp.pprint(values))
 
             username = client.cmd(minion, PILLAR_GET_CMD, [ADMIN_USER_KEY])
             user = rhnUser.search(username[minion])
@@ -276,7 +279,7 @@ def process_network_ifaces_result(minion, event):
     profile = dict()
     interfaces = event['data']['return']
     logger.info('Got network interfaces for %s', sid)
-    logger.debug(interfaces)
+    logger.debug(pp.pprint(interfaces))
 
     profile['class'] = 'NETINTERFACES'
     for iface, details in interfaces.iteritems():
@@ -415,7 +418,7 @@ def handle_job(pending_jobs, job_state, event):
             update_actions_for_job(event)
     else:
         logger.warning("Unexpected job_state: %s", job_state)
-        logger.debug(event)
+        logger.debug(pp.pprint(event))
     return pending_jobs
 
 
@@ -482,14 +485,14 @@ def main():
             match = re.match(r'salt/job/\d+/(new|ret)/*.*', tag)
             if not match:
                 logger.warning("Unsupported job event: %s", tag)
-                logger.debug(event)
+                logger.debug(pp.pprint(event))
                 continue
             job_state = match.groups()[0]
             pending_jobs = handle_job(pending_jobs, job_state, event)
             logger.debug("Pending jobs: %s", pending_jobs)
         else:
             logger.warning('Not handling event %s', tag)
-            logger.debug(event)
+            logger.debug(pp.pprint(event))
 
 
 if __name__ == "__main__":
