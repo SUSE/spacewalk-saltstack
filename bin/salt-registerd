@@ -81,10 +81,7 @@ def transaction(context=None):
         logger.exception("Server fault caught: %s", fault)
         rollback()
     except Exception as error:
-        msg = error.message
-        if not msg:
-            # SQLPreparedStatementError doesn't use Exception.message
-            msg = str(error)
+        msg = str(error)
         if msg == "Unknown action type salt.job" or \
            msg.find('rhnactionsaltjob') != -1:
             logger.error("Saltstack not fully supported by this system:\n%s.",
@@ -140,7 +137,8 @@ def register_system(client, minion):
 
             logger.info("%s registered as %s", minion, newserv.getid())
         else:
-            logger.warning("Can't get grains for %s", minion)
+            logger.error("Registration failed: Can't get grains for %s",
+                         minion)
 
 
 def is_minion_registered(minion):
@@ -152,8 +150,7 @@ def is_minion_registered(minion):
     SELECT id from rhnServer
     WHERE digital_server_id=:did
     """)
-    query_results = cursor.execute(did=('SALT-ID-%s' % minion))
-    if query_results > 0:
+    if cursor.execute(did=('SALT-ID-%s' % minion)):
         result = cursor.fetchone_dict()['id']
     return result
 
@@ -168,10 +165,11 @@ def create_actions_for_job(event):
     minions = event['data']['minions']
     fun = event['data']['fun']
 
+    aid = rhnAction.schedule_action(action_type='salt.job',
+                                    action_name='Salt job %s (%s)' %
+                                    (jid, fun), org_id=1)
+
     with transaction(event):
-        aid = rhnAction.schedule_action(action_type='salt.job',
-                                        action_name='Salt job %s (%s)' %
-                                        (jid, fun), org_id=1)
         cursor = rhnSQL.prepare("""
         insert into
         rhnActionSaltJob (action_id, jid, data)
@@ -179,6 +177,7 @@ def create_actions_for_job(event):
         """)
         cursor.execute(action_id=aid, jid=jid,
                        data=json.dumps(event['data']))
+
         for minion in minions:
             sid = is_minion_registered(minion)
             if not sid:
@@ -204,8 +203,8 @@ def update_actions_for_job(event):
     minion = event['data']['id']
 
     sid = is_minion_registered(minion)
-    if not sid > 0:
-        logger.error('minion %s is not registered anymore', minion)
+    if not sid:
+        logger.error('minion %s is no longer registered', minion)
         # FIXME: cleanup its actions?
         return
 
@@ -272,11 +271,12 @@ def process_network_ifaces_result(minion, event):
     """
     sid = is_minion_registered(minion)
     if not sid:
-        logger.warning("%s is not registered. Interfaces ignored.", minion)
+        logger.warning("%s is no longer registered. Interfaces ignored.",
+                       minion)
         return
 
     profile = dict()
-    interfaces = event['data']['return']
+    interfaces = event.get('data', {}).get('return', {})
     logger.info('Got network interfaces for %s', sid)
     logger.debug(pp.pprint(interfaces))
 
@@ -327,13 +327,18 @@ def process_package_list_result(minion, event):
     Updates the server registration of the minion with
     the list of packages reported by salt.
     """
-    logger.info('Got package list for %s', minion)
-
     sid = is_minion_registered(minion)
+    if not sid:
+        logger.warning("%s is no longer registered. Ignoring package list",
+                       minion)
+        return
 
-    package_list = format_package_list(event['data']['return'])
+    package_list = format_package_list(event.get('data', {}).get('return', {}))
 
-    if sid:
+    if not package_list:
+        logger.error("Failed to retrieve a current package list for %s",
+                     minion)
+    else:
         logger.info('Updating package list for Spacewalk sid=%s', sid)
         server = rhnServer.search(int(sid))
         server.dispose_packages()
@@ -429,7 +434,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--debug", help="Enable debug logging",
                         action="store_true", default=False)
-
     args = parser.parse_args()
 
     logger.info("###############################")
