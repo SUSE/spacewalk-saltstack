@@ -22,8 +22,29 @@ This process allows you to integrate a Saltstack environment in Spacewalk.
 ## Requirements
 
 * Run the salt-master on the Spacewalk server
+
+* Setup pillar data so set the default admin user and activation key for
+  salt minions. Put the following data in /srv/pillar
+
+top.sls
+'''yaml
+base:
+  '*':
+    - data
+'''
+
+data.sls
+'''yamp
+spacewalk-activation-key: 1-salt-testing
+spacewalk-admin-user: admin
+'''
+
+This gives the same admin user and key for all minions. You can change top.sls to match different minion names or grains.
+
 * Some patches to Spacewalk to introduce a SaltJob Action type
 * Run salt-api locally in the Spacewalk so that the webapp can interact with it
+
+* 
 
 ## Inner workings
 
