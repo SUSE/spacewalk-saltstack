@@ -47,9 +47,9 @@ LIST_PKGS_CMD = 'pkg.list_pkgs'
 GRAINS_ITEMS_CMD = 'grains.items'
 
 # TODO: make configurable?
-ACTIVATION_TOKEN_KEY = 'spacewalk-activation-token'
+ACTIVATION_KEY_PILLAR_KEY = 'spacewalk-activation-key'
 # TODO: make configurable?
-ADMIN_USER_KEY = 'spacewalk-admin-user'
+ADMIN_USER_PILLAR_KEY = 'spacewalk-admin-user'
 
 
 @contextmanager
@@ -106,13 +106,16 @@ def register_system(client, minion):
             values = grains[minion]['ret']
             logger.debug("%s grains:\n%s", minion, pp.pprint(values))
 
-            username = client.cmd(minion, PILLAR_GET_CMD, [ADMIN_USER_KEY])
+            username = client.cmd(minion, PILLAR_GET_CMD, [ADMIN_USER_PILLAR_KEY])
+            if not username[minion]:
+                logger.error("Can't get admin user from pillar key '%s'", ADMIN_USER_PILLAR_KEY)
+                continue
             user = rhnUser.search(username[minion])
 
             rhnSQL.clear_log_id()
             newserv = rhnServer.Server(user, values['osarch'])
 
-            token = client.cmd(minion, PILLAR_GET_CMD, [ACTIVATION_TOKEN_KEY])
+            token = client.cmd(minion, PILLAR_GET_CMD, [ACTIVATION_KEY_PILLAR_KEY])
 
             if not token[minion]:
                 tokens_obj = rhnServer.search_org_token(user.contact["org_id"])
