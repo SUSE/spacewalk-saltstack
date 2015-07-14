@@ -27,17 +27,17 @@ This process allows you to integrate a Saltstack environment in Spacewalk.
   salt minions. Put the following data in /srv/pillar
 
 top.sls
-'''yaml
+```yaml
 base:
   '*':
     - data
-'''
+```
 
 data.sls
-'''yamp
+```yamp
 spacewalk-activation-key: 1-salt-testing
 spacewalk-admin-user: admin
-'''
+```
 
 This gives the same admin user and key for all minions. You can change top.sls to match different minion names or grains.
 
