@@ -1,8 +1,7 @@
 #!/usr/bin/env python
-# Copyright (c) 2014 SUSE
+# Copyright (c) 2014-2015 SUSE LLC
 #
 # Licensed under the MIT license. See MIT-LICENSE for details.
-#
 
 """
 This is a standlone program and not meant to be imported.
