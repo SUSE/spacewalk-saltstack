@@ -12,6 +12,7 @@ import logging
 import re
 import json
 import argparse
+import sys
 from pprint import PrettyPrinter
 from contextlib import contextmanager
 
@@ -494,8 +495,14 @@ def main():
                 logger.debug(pp.pprint(event))
                 continue
             job_state = match.groups()[0]
-            pending_jobs = handle_job(pending_jobs, job_state, event)
-            logger.debug("Pending jobs: %s", pending_jobs)
+            try:
+                pending_jobs = handle_job(pending_jobs, job_state, event)
+                logger.debug("Pending jobs: %s", pending_jobs)
+            except ValueError as e:
+                logger.error(sys.exc_info()[0])
+                logger.error("Make sure the action type salt.job is known")
+            except Exception as e:
+                logger.error(sys.exc_info()[0])
         else:
             logger.warning('Not handling event %s', tag)
             logger.debug(pp.pprint(event))
