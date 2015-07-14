@@ -39,6 +39,12 @@ spacewalk-activation-key: 1-salt-testing
 spacewalk-admin-user: admin
 ```
 
+and refresh the pillar data
+
+```
+$ salt '*' saltutil.refresh_pillar
+```
+
 This gives the same admin user and key for all minions. You can change top.sls to match different minion names or grains.
 
 * Some patches to Spacewalk to introduce a SaltJob Action type
