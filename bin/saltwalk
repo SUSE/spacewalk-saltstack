@@ -110,6 +110,7 @@ def register_system(client, minion):
             if not username[minion]:
                 logger.error("Can't get admin user from pillar key '%s'", ADMIN_USER_PILLAR_KEY)
                 continue
+
             user = rhnUser.search(username[minion])
 
             rhnSQL.clear_log_id()
