@@ -469,24 +469,38 @@ def main():
                              event, error)
             continue
 
-        # Not every command will have this field
-        minion = data.get('id', None)
-
         # other possible values:
         # salt/key act accept, act reject
         # salt/auth
         if tag == 'salt/auth':
+            minion = data.get('id', None)
             logger.info("minion %s authenticated", minion)
             # TODO: do we need to do something? Update checkin time?
 
         elif tag == 'minion_start':
+            # Not every command will have this field
+            #logger.info(pp.pprint(data))
+            minion = data.get('id', None)
+
             logger.info('minion %s started', minion)
+            logger.info(pp.pprint(event))
             # Register if this is the first time we've seen the minion
             if not is_minion_registered(minion):
                 register_system(client, minion)
             pending_jobs = minion_startup(pending_jobs, client, minion)
             logger.debug("Pending jobs: %s", pending_jobs)
-
+        elif tag == 'salt/key':
+            # if a key is accepted, we should check if the minion
+            # is registered.
+            # If minion is unaccepted, then deleted from Spacewalk, and
+            # then reaccepted, it will not show up as minion_start
+            if data['act'] == 'accept' and data.get('result', False):
+                minion = data.get('id', None)
+                logger.info('minion %s key accepted', minion)
+                if not is_minion_registered(minion):
+                    register_system(client, minion)
+                    pending_jobs = minion_startup(pending_jobs, client, minion)
+                    logger.debug("Pending jobs: %s", pending_jobs)
         elif tag.startswith('salt/job'):
             # process a job event
             match = re.match(r'salt/job/\d+/(new|ret)/*.*', tag)
