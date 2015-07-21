@@ -47,10 +47,9 @@ $ salt '*' saltutil.refresh_pillar
 
 This gives the same admin user and key for all minions. You can change top.sls to match different minion names or grains.
 
-* Some patches to Spacewalk to introduce a SaltJob Action type
-* Run salt-api locally in the Spacewalk so that the webapp can interact with it
+* Some patches to Spacewalk to introduce a SaltJob Action type. If you use Spacewalk upstream you will need to apply these: https://gist.github.com/dmacvicar/a53e3cf972d0583ed1f0
 
-* 
+* Run salt-api locally in the Spacewalk so that the webapp can interact with it
 
 ## Inner workings
 
